@@ -41,6 +41,93 @@ import org.apache.spark.sql.functions.when
 import org.scalamock.scalatest.MockFactory
 import org.scalatest.Matchers
 import org.scalatest.WordSpec
+import java.time.{Instant, LocalDate}
+
+class VerificationSuiteDateTimeTest extends WordSpec with Matchers with SparkContextSpec
+  with FixtureSupport with MockFactory {
+  "Verification Suite" should {
+    "test DateTime columns" in withSparkSessionJava8APIEnabled { session =>
+      val data = getDfWithLocalDateAndInstant(session)
+
+      val hasMinTimestamp = new Check(CheckLevel.Error, "rule1")
+        .hasMinTimestamp("dateOfBirth", _ == Instant.parse("2019-04-11T12:15:00Z"))
+
+      val hasMinTimestampFail = new Check(CheckLevel.Error, "rule1")
+        .hasMinTimestamp("dateOfBirth", _ == Instant.parse("2020-01-01T00:00:00Z"))
+
+    //   val isComplete = new Check(CheckLevel.Error, "rule1").isComplete("att1")
+    //   val completeness = new Check(CheckLevel.Error, "rule2").hasCompleteness("att2", _ > 0.7)
+    //   val isPrimaryKey = new Check(CheckLevel.Error, "rule3").isPrimaryKey("item")
+      val minLength = new Check(CheckLevel.Error, "rule3")
+        .hasMinLength("name", _ >= 1, analyzerOptions = Option(AnalyzerOptions(NullBehavior.Fail)))
+    //   val maxLength = new Check(CheckLevel.Error, "rule4")
+    //     .hasMaxLength("item", _ <= 1, analyzerOptions = Option(AnalyzerOptions(NullBehavior.Fail)))
+    //   val patternMatch = new Check(CheckLevel.Error, "rule6").hasPattern("att2", "[a-z]".r)
+    //   val min = new Check(CheckLevel.Error, "rule7").hasMin("val1", _ > 1)
+    //   val max = new Check(CheckLevel.Error, "rule8").hasMax("val1", _ <= 3)
+    //   val compliance = new Check(CheckLevel.Error, "rule9")
+    //     .satisfies("item < 1000", "rule9", columns = List("item"))
+      val expectedColumn1 = hasMinTimestamp.description
+      val expectedColumn2 = hasMinTimestampFail.description
+      val expectedColumn3 = minLength.description
+    //   val expectedColumn4 = maxLength.description
+    //   val expectedColumn5 = patternMatch.description
+    //   val expectedColumn6 = min.description
+    //   val expectedColumn7 = max.description
+    //   val expectedColumn8 = compliance.description
+
+      val suite = new VerificationSuite().onData(data)
+        .addCheck(hasMinTimestamp)
+        .addCheck(hasMinTimestampFail)
+    //     .addCheck(completeness)
+        .addCheck(minLength)
+    //     .addCheck(maxLength)
+    //     .addCheck(patternMatch)
+    //     .addCheck(min)
+    //     .addCheck(max)
+    //     .addCheck(compliance)
+
+      val result: VerificationResult = suite.run()
+
+      assert(result.status == CheckStatus.Error)
+
+      val checkData = VerificationResult.checkResultsAsDataFrame(session, result)
+      checkData.show(truncate = false)
+
+      val resultData = VerificationResult.rowLevelResultsAsDataFrame(session, result, data)
+      resultData.show()
+      // val expectedColumns: Set[String] =
+        // data.columns.toSet + expectedColumn1 + expectedColumn2
+        // + expectedColumn3 + expectedColumn4 +
+        // expectedColumn5 + expectedColumn6 + expectedColumn7 + expectedColumn8
+      // assert(resultData.columns.toSet == expectedColumns)
+
+      val rowLevel1 = resultData.select(expectedColumn1).collect().map(r => r.getBoolean(0))
+      assert(Seq(true, true, true, true, true, true).sameElements(rowLevel1))
+
+    //   val rowLevel2 = resultData.select(expectedColumn2).collect().map(r => r.getBoolean(0))
+    //   assert(Seq(true, true, false, true, false, true).sameElements(rowLevel2))
+
+    //   val rowLevel3 = resultData.select(expectedColumn3).collect().map(r => r.getBoolean(0))
+    //   assert(Seq(true, true, true, true, true, true).sameElements(rowLevel3))
+
+    //   val rowLevel4 = resultData.select(expectedColumn4).collect().map(r => r.getBoolean(0))
+    //   assert(Seq(true, false, false, false, false, false).sameElements(rowLevel4))
+
+    //   val rowLevel5 = resultData.select(expectedColumn5).collect().map(r => r.getAs[Boolean](0))
+    //   assert(Seq(true, true, false, true, false, true).sameElements(rowLevel5))
+
+    //   val rowLevel6 = resultData.select(expectedColumn6).collect().map(r => r.getAs[Boolean](0))
+    //   assert(Seq(false, true, true, true, true, true).sameElements(rowLevel6))
+
+    //   val rowLevel7 = resultData.select(expectedColumn7).collect().map(r => r.getAs[Boolean](0))
+    //   assert(Seq(true, true, true, false, false, false).sameElements(rowLevel7))
+
+    //   val rowLevel8 = resultData.select(expectedColumn8).collect().map(r => r.getAs[Boolean](0))
+    //   assert(Seq(true, true, true, false, false, false).sameElements(rowLevel8))
+    }
+  }
+  }
 
 class VerificationSuiteTest extends WordSpec with Matchers with SparkContextSpec
   with FixtureSupport with MockFactory {
