@@ -21,6 +21,7 @@ import com.amazon.deequ.io.DfsUtils
 import com.amazon.deequ.metrics.{DoubleMetric, Metric}
 import com.amazon.deequ.repository.{MetricsRepository, ResultKey}
 import org.apache.spark.sql.Column
+import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.storage.StorageLevel
@@ -164,14 +165,50 @@ object AnalysisRunner {
         AnalyzerContext.empty
       }
 
+    // If grouping analyzers exist, we might need the total row count.
+    // If no Size() analyzer is present yet, add Size(None) so that row count
+    // will be computed in the same pass as other scanning analyzers.
+    var scanningAnalyzersToRun = scanningAnalyzers
+
+    // Determines if we have at least one grouping analyzer that requires a global row count.
+    // FrequencyBasedAnalyzer calculates its own row count internally, so it does not need a separate Size().
+    val groupingAnalyzersNeedGlobalCount = groupingAnalyzers.exists { analyzer =>
+      !analyzer.isInstanceOf[FrequencyBasedAnalyzer]
+    }
+
+    // Check if we need to add a Size() analyzer to capture the global row count in the same pass,
+    // but only if a scan is going to happen anyway.
+    val alreadyHasSize = scanningAnalyzersToRun.exists(_.isInstanceOf[Size])
+    val needsScan = actuallyNeedsScanning(scanningAnalyzersToRun, aggregateWith)
+
+    if (
+      groupingAnalyzersNeedGlobalCount &&
+        scanningAnalyzersToRun.nonEmpty &&
+        !alreadyHasSize &&
+        needsScan
+    ) {
+      // Add Size(None) to scanning analyzers so we only scan once and reuse the row count.
+      scanningAnalyzersToRun = scanningAnalyzersToRun :+ Size(None).asInstanceOf[Analyzer[State[_], Metric[_]]]
+    }
+
     /* Run the analyzers which do not require grouping in a single pass over the data */
     val nonGroupedMetrics =
-      runScanningAnalyzers(data, scanningAnalyzers, aggregateWith, saveStatesWith)
+      runScanningAnalyzers(
+        data,
+        scanningAnalyzersToRun.map(_.asInstanceOf[Analyzer[State[_], Metric[_]]]),
+        aggregateWith,
+        saveStatesWith
+      )
 
-    // TODO this can be further improved, we can get the number of rows from other metrics as well
-    // TODO we could also insert an extra Size() computation if we have to scan the data anyways
-    var numRowsOfData = nonGroupedMetrics.metric(Size()).collect {
-      case DoubleMetric(_, _, _, Success(value: Double), None) => value.toLong
+    // If Size() was included, extract the row count from the computed metrics
+    var numRowsOfData: Option[Long] = {
+      if (scanningAnalyzersToRun.exists(_.isInstanceOf[Size])) {
+        nonGroupedMetrics.metric(Size()).collectFirst {
+          case DoubleMetric(_, _, _, Success(value: Double), None) => value.toLong
+        }
+      } else {
+        None
+      }
     }
 
     var groupedMetrics = AnalyzerContext.empty
@@ -324,7 +361,9 @@ object AnalysisRunner {
         val offsets = shareableAnalyzers.scanLeft(0) { case (current, analyzer) =>
           current + analyzer.aggregationFunctions().length
         }
-        val results = data.agg(aggregations.head, aggregations.tail: _*).collect().head
+
+        val prunedData = pruneColumns(data, shareableAnalyzers)
+        val results = prunedData.agg(aggregations.head, aggregations.tail: _*).collect().head
         shareableAnalyzers.zip(offsets).map { case (analyzer, offset) =>
           analyzer ->
             successOrFailureMetricFrom(analyzer, results, offset, aggregateWith, saveStatesTo)
@@ -344,6 +383,35 @@ object AnalysisRunner {
       .toMap[Analyzer[_, Metric[_]], Metric[_]]
 
     sharedResults ++ AnalyzerContext(otherMetrics)
+  }
+
+  /**
+    * Attempts to select only the columns needed by the given analyzers.
+    * This enables column pruning for V2 DataSource connectors (e.g. Iceberg, Delta Lake)
+    * which make scan-planning decisions before Spark's optimizer can simplify the plan.
+    *
+    * Falls back to the original DataFrame if any analyzer cannot statically declare its columns
+    * (e.g. analyzers with free-form SQL predicates or WHERE clauses).
+    */
+  private[this] def pruneColumns(
+      data: DataFrame,
+      analyzers: Seq[Analyzer[_, _]])
+    : DataFrame = {
+
+    val allColumns = analyzers.map(_.columnsReferenced())
+
+    if (allColumns.exists(_.isEmpty)) {
+      // At least one analyzer cannot declare its columns; skip pruning
+      data
+    } else {
+      val neededColumns = allColumns.flatMap(_.get).distinct
+      if (neededColumns.isEmpty) {
+        // All analyzers are dataset-level (e.g. Size), no column selection needed
+        data
+      } else {
+        data.select(neededColumns.map(col): _*)
+      }
+    }
   }
 
   /** Compute scan-shareable analyzer metric from aggregation result, mapping generic exceptions
@@ -557,6 +625,32 @@ object AnalysisRunner {
     frequenciesAndNumRows.frequencies.unpersist()
 
     AnalyzerContext((metricsByAnalyzer ++ otherMetrics).toMap[Analyzer[_, Metric[_]], Metric[_]])
+  }
+
+  /**
+   * Decides whether a new Spark scan is actually needed for the given analyzers.
+   * If all required analyzer states are already loaded from the optional StateLoader,
+   * we can skip scanning again.
+   */
+  private[this] def actuallyNeedsScanning(
+      analyzers: Seq[Analyzer[State[_], Metric[_]]],
+      aggregateWith: Option[StateLoader])
+      : Boolean = {
+    if (analyzers.isEmpty) {
+      false
+    } else {
+      aggregateWith match {
+        case None =>
+          // No preloaded states, so we must scan
+          true
+
+        case Some(loader) =>
+          // If at least one analyzer state is missing, a scan is needed
+          analyzers.exists { analyzer =>
+            loader.load(analyzer).isEmpty
+          }
+      }
+    }
   }
 
 }

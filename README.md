@@ -1,8 +1,8 @@
 # Deequ - Unit Tests for Data
 [![GitHub license](https://img.shields.io/github/license/awslabs/deequ.svg)](https://github.com/awslabs/deequ/blob/master/LICENSE)
 [![GitHub issues](https://img.shields.io/github/issues/awslabs/deequ.svg)](https://github.com/awslabs/deequ/issues)
-[![Build Status](https://travis-ci.com/awslabs/deequ.svg?branch=master)](https://travis-ci.com/awslabs/deequ)
-[![Maven Central](https://maven-badges.herokuapp.com/maven-central/com.amazon.deequ/deequ/badge.svg)](https://maven-badges.herokuapp.com/maven-central/com.amazon.deequ/deequ)
+[![Build Status](https://github.com/awslabs/deequ/actions/workflows/maven.yml/badge.svg?branch=master)](https://github.com/awslabs/deequ/actions/workflows/maven.yml?query=branch%3Amaster)
+[![Maven Central](https://img.shields.io/maven-central/v/com.amazon.deequ/deequ.svg)](https://search.maven.org/artifact/com.amazon.deequ/deequ)
 
 Deequ is a library built on top of Apache Spark for defining "unit tests for data", which measure data quality in large datasets. We are happy to receive feedback and [contributions](CONTRIBUTING.md).
 
@@ -134,6 +134,190 @@ Our library contains much more functionality than what we showed in the basic ex
  * [Automatic suggestion of constraints](https://github.com/awslabs/deequ/blob/master/src/main/scala/com/amazon/deequ/examples/constraint_suggestion_example.md) for large datasets
  * [Incremental metrics computation on growing data and metric updates on partitioned data](https://github.com/awslabs/deequ/blob/master/src/main/scala/com/amazon/deequ/examples/algebraic_states_example.md) (advanced)
 
+## DQDL (Data Quality Definition Language)
+
+Deequ also supports [DQDL](https://docs.aws.amazon.com/glue/latest/dg/dqdl.html), a declarative language for defining data quality rules. DQDL allows you to express data quality constraints in a simple, readable format.
+
+### Supported DQDL Rules
+
+- **RowCount**: `RowCount < 100`
+- **ColumnCount**: `ColumnCount = 10`
+- **ZerosCount**: `ZerosCount "column" = 0`
+- **Completeness**: `Completeness "column" > 0.9`
+- **IsComplete**: `IsComplete "column"`
+- **Uniqueness**: `Uniqueness "column" = 1.0`
+- **IsUnique**: `IsUnique "column"`
+- **ColumnCorrelation**: `ColumnCorrelation "col1" "col2" > 0.8`
+- **DistinctValuesCount**: `DistinctValuesCount "column" = 5`
+- **Entropy**: `Entropy "column" > 2.0`
+- **Mean**: `Mean "column" between 10 and 50`
+- **StandardDeviation**: `StandardDeviation "column" < 5.0`
+- **Variance**: `Variance "column" < 25.0`
+- **Skewness**: `Skewness "column" between -1 and 1`
+- **Kurtosis**: `Kurtosis "column" between -2 and 10`
+- **Range**: `Range "column" between 0 and 100`
+- **Sum**: `Sum "column" = 100`
+- **UniqueValueRatio**: `UniqueValueRatio "column" > 0.7`
+- **CustomSql**: `CustomSql "SELECT COUNT(*) FROM primary" > 0`
+- **IsPrimaryKey**: `IsPrimaryKey "column"`
+- **ColumnLength**: `ColumnLength "column" between 1 and 5`
+- **ColumnExists**: `ColumnExists "column"`
+- **ColumnValues**: Validate column values against numeric, string, or date expressions
+  - Numeric: `ColumnValues "price" > 0`, `ColumnValues "age" between 18 and 65`
+  - String: `ColumnValues "status" in ["active", "inactive"]`
+  - Date: `ColumnValues "order_date" > "2022-01-01"`, `ColumnValues "order_date" between "2022-01-01" and "2023-01-01"`
+- **RowCountMatch**: `RowCountMatch "referenceDataset" >= 0.9`
+- **SchemaMatch**: `SchemaMatch "referenceDataset" > 0.8`
+- **DataFreshness**: `DataFreshness "Order_Date" <= 24 hours`
+- **Composite Rules**: Combine multiple rules with `and` / `or` operators
+  - Simple: `(RowCount > 0) and (IsComplete "column")`
+  - Nested: `(Rule1) or ((Rule2) and (Rule3))`
+
+### Scala Example
+
+ScalaDQDLExample.scala
+
+```scala
+import com.amazon.deequ.dqdl.EvaluateDataQuality
+import org.apache.spark.sql.SparkSession
+
+val spark = SparkSession.builder()
+  .appName("DQDL Example")
+  .master("local[*]")
+  .getOrCreate()
+
+import spark.implicits._
+
+// Sample data
+val df = Seq(
+  ("1", "a", "c"),
+  ("2", "a", "c"),
+  ("3", "a", "c"),
+  ("4", "b", "d")
+).toDF("item", "att1", "att2")
+
+// Define rules using DQDL syntax
+val ruleset = """Rules=[IsUnique "item", RowCount < 10, Completeness "item" > 0.8, Uniqueness "item" = 1.0]"""
+
+// Evaluate data quality
+val results = EvaluateDataQuality.process(df, ruleset)
+results.show()
+```
+
+### Row-Level Results
+
+Use `processRows()` to identify which specific rows pass or fail each rule:
+
+```scala
+val df = Seq(
+  ("1", "Alice", Some(25)),
+  ("2", "Bob", None),
+  ("3", null, Some(30))
+).toDF("id", "name", "age")
+
+val ruleset = """Rules=[IsComplete "name", IsComplete "age"]"""
+
+val results = EvaluateDataQuality.processRows(df, ruleset)
+
+// Access the row-level outcomes
+val rowLevelOutcomes = results("rowLevelOutcomes")
+rowLevelOutcomes.select("id", "DataQualityRulesPass", "DataQualityRulesFail", "DataQualityEvaluationResult").show(false)
+
+// Filter to failed rows
+val failedRows = rowLevelOutcomes.filter($"DataQualityEvaluationResult" === "Failed")
+```
+
+The `rowLevelOutcomes` DataFrame contains:
+- `DataQualityRulesPass`: Array of rules that passed for each row
+- `DataQualityRulesFail`: Array of rules that failed for each row  
+- `DataQualityRulesSkip`: Array of rules without row-level support
+- `DataQualityEvaluationResult`: "Passed" or "Failed" for each row
+
+**Note:** Row-level evaluation is supported for `IsComplete`, `IsUnique`, `ColumnValues` (IN/NOT IN), `Completeness`, `Uniqueness`, and composite rules. Dataset-level rules like `RowCount` and `Mean` are marked as skipped.
+
+### Java Example
+
+JavaDQDLExample.java
+
+```java
+import com.amazon.deequ.dqdl.EvaluateDataQuality;
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+
+SparkSession spark = SparkSession.builder()
+    .appName("DQDL Java Example")
+    .master("local[*]")
+    .getOrCreate();
+
+// Create sample data
+Dataset<Row> df = spark.sql(
+    "SELECT * FROM VALUES " +
+    "('1', 'a', 'c'), " +
+    "('2', 'a', 'c'), " +
+    "('3', 'a', 'c'), " +
+    "('4', 'b', 'd') " +
+    "AS t(item, att1, att2)"
+);
+
+// Define rules using DQDL syntax
+String ruleset = "Rules=[IsUnique \"item\", RowCount < 10, Completeness \"item\" > 0.8, Uniqueness \"item\" = 1.0]";
+
+// Evaluate data quality
+Dataset<Row> results = EvaluateDataQuality.process(df, ruleset);
+results.show();
+```
+
+### Composite Rules Example
+
+Composite rules allow you to combine multiple data quality checks using logical operators (`and`, `or`). This enables complex validation scenarios:
+
+```scala
+import com.amazon.deequ.dqdl.EvaluateDataQuality
+import org.apache.spark.sql.SparkSession
+
+val spark = SparkSession.builder()
+  .appName("Composite Rules Example")
+  .master("local[*]")
+  .getOrCreate()
+
+import spark.implicits._
+
+val df = Seq(
+  (1, "Alice", 25, "alice@example.com"),
+  (2, "Bob", 30, "bob@example.com"),
+  (3, "Charlie", 35, "charlie@example.com")
+).toDF("id", "name", "age", "email")
+
+// Simple AND: Both conditions must be true
+val andRule = """Rules=[(RowCount > 0) and (IsComplete "email")]"""
+val andResults = EvaluateDataQuality.process(df, andRule)
+andResults.show()
+
+// Simple OR: At least one condition must be true
+val orRule = """Rules=[(RowCount > 100) or (IsUnique "id")]"""
+val orResults = EvaluateDataQuality.process(df, orRule)
+orResults.show()
+
+// Nested composition: Complex logic with multiple levels
+val nestedRule = """Rules=[
+  ((IsComplete "name") and (IsComplete "email")) or 
+  ((RowCount > 0) and (IsUnique "id"))
+]"""
+val nestedResults = EvaluateDataQuality.process(df, nestedRule)
+nestedResults.show()
+
+// Multiple composite rules in one ruleset
+val multipleRules = """Rules=[
+  (RowCount > 0) and (IsComplete "id"),
+  (IsUnique "id") or (IsUnique "email"),
+  ((Mean "age" > 20) and (Mean "age" < 50)) or (RowCount < 10)
+]"""
+val multipleResults = EvaluateDataQuality.process(df, multipleRules)
+multipleResults.show()
+```
+
+**Note:** Composite rules currently support dataset-level evaluation only. Row-level evaluation (identifying which specific rows pass/fail) is not yet implemented.
 
 ## Citation
 

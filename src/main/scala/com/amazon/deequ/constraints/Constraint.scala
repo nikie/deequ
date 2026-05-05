@@ -17,8 +17,10 @@
 package com.amazon.deequ.constraints
 
 import com.amazon.deequ.analyzers._
+import com.amazon.deequ.checks.Check
 import com.amazon.deequ.metrics.BucketDistribution
 import com.amazon.deequ.metrics.Distribution
+import com.amazon.deequ.metrics.DistributionBinned
 import com.amazon.deequ.metrics.Metric
 import org.apache.spark.sql.expressions.UserDefinedFunction
 
@@ -122,7 +124,7 @@ object Constraint {
     fromAnalyzer(size, assertion, hint)
   }
 
-  def fromAnalyzer(size: Size, assertion: Long => Boolean, hint: Option[String]): Constraint = {
+  private[deequ] def fromAnalyzer(size: Size, assertion: Long => Boolean, hint: Option[String]): Constraint = {
     val constraint = AnalysisBasedConstraint[NumMatches, Double, Long](size,
       assertion, Some(_.toLong), hint)
 
@@ -135,10 +137,32 @@ object Constraint {
   }
 
 
-  def fromAnalyzer(colCount: ColumnCount, assertion: Long => Boolean, hint: Option[String]): Constraint = {
+  private[deequ] def fromAnalyzer(colCount: ColumnCount, assertion: Long => Boolean, hint: Option[String]):
+      Constraint = {
     val constraint = AnalysisBasedConstraint[NumMatches, Double, Long](colCount, assertion, Some(_.toLong), hint)
 
     new NamedConstraint(constraint, name = s"ColumnCountConstraint($colCount)")
+  }
+
+  /**
+    * Runs zeros count analysis on the given column and executes the assertion
+    *
+    * @param column Column to run the assertion on
+    * @param assertion Function that receives a long input parameter and returns a boolean
+    * @param hint    A hint to provide additional context why a constraint could have failed
+    */
+  def zerosCountConstraint(
+      column: String,
+      assertion: Long => Boolean,
+      where: Option[String] = None,
+      hint: Option[String] = None)
+    : Constraint = {
+
+    val zerosCount = ZerosCount(column, where)
+    val constraint = AnalysisBasedConstraint[NumMatches, Double, Long](
+      zerosCount, assertion, Some(_.toLong), hint)
+
+    new NamedConstraint(constraint, s"ZerosCountConstraint($zerosCount)")
   }
 
   /**
@@ -199,6 +223,44 @@ object Constraint {
   }
 
   /**
+    * Runs HistogramBinned analysis on the given column and executes the assertion
+    */
+  def histogramBinnedConstraint(
+      column: String,
+      assertion: DistributionBinned => Boolean,
+      binCount: Option[Int] = Some(HistogramBinned.DefaultBinCount),
+      where: Option[String] = None,
+      hint: Option[String] = None)
+    : Constraint = {
+
+    val histogramBinned = HistogramBinned(column, binCount, where = where)
+
+    val constraint = AnalysisBasedConstraint[FrequenciesAndNumRows, DistributionBinned, DistributionBinned](
+      histogramBinned, assertion, hint = hint)
+
+    new NamedConstraint(constraint, s"HistogramBinnedConstraint($histogramBinned)")
+  }
+
+  /**
+    * Runs HistogramBinned analysis on the given column and executes the assertion on bin count
+    */
+  def histogramBinnedBinConstraint(
+      column: String,
+      assertion: Long => Boolean,
+      binCount: Option[Int] = Some(HistogramBinned.DefaultBinCount),
+      where: Option[String] = None,
+      hint: Option[String] = None)
+    : Constraint = {
+
+    val histogramBinned = HistogramBinned(column, binCount, where = where)
+
+    val constraint = AnalysisBasedConstraint[FrequenciesAndNumRows, DistributionBinned, Long](
+      histogramBinned, assertion, Some(_.numberOfBins), hint)
+
+    new NamedConstraint(constraint, s"HistogramBinnedBinConstraint($histogramBinned)")
+  }
+
+  /**
     * Runs Completeness analysis on the given column and executes the assertion
     *
     * @param column    Column to run the assertion on
@@ -220,7 +282,7 @@ object Constraint {
     this.fromAnalyzer(completeness, assertion, hint)
   }
 
-  def fromAnalyzer(completeness: Completeness,
+  private[deequ] def fromAnalyzer(completeness: Completeness,
                    assertion: Double => Boolean,
                    hint: Option[String] = None): Constraint = {
     val constraint = AnalysisBasedConstraint[NumMatchesAndCount, Double, Double](
@@ -249,6 +311,7 @@ object Constraint {
     new NamedConstraint(constraint, s"AnomalyConstraint($analyzer)")
   }
 
+
   /**
     * Runs Uniqueness analysis on the given columns and executes the assertion
     *
@@ -272,7 +335,8 @@ object Constraint {
     fromAnalyzer(uniqueness, assertion, hint)
   }
 
-  def fromAnalyzer(uniqueness: Uniqueness, assertion: Double => Boolean, hint: Option[String]): Constraint = {
+  private[deequ] def fromAnalyzer(uniqueness: Uniqueness, assertion: Double => Boolean, hint: Option[String]):
+      Constraint = {
     val constraint = AnalysisBasedConstraint[FrequenciesAndNumRows, Double, Double](
       uniqueness, assertion, hint = hint)
 
@@ -302,7 +366,8 @@ object Constraint {
     fromAnalyzer(distinctness, assertion, hint)
   }
 
-  def fromAnalyzer(distinctness: Distinctness, assertion: Double => Boolean, hint: Option[String]): Constraint = {
+  private[deequ] def fromAnalyzer(distinctness: Distinctness, assertion: Double => Boolean, hint: Option[String]):
+      Constraint = {
     val constraint = AnalysisBasedConstraint[FrequenciesAndNumRows, Double, Double](
       distinctness, assertion, hint = hint)
 
@@ -331,7 +396,7 @@ object Constraint {
     fromAnalyzer(uniqueValueRatio, assertion, hint)
   }
 
-  def fromAnalyzer(
+  private[deequ] def fromAnalyzer(
       uniqueValueRatio: UniqueValueRatio,
       assertion: Double => Boolean,
       hint: Option[String])
@@ -403,7 +468,7 @@ object Constraint {
     fromAnalyzer(patternMatch, pattern, assertion, name, hint)
   }
 
-  def fromAnalyzer(
+  private[deequ] def fromAnalyzer(
                     patternMatch: PatternMatch,
                     pattern: Regex,
                     assertion: Double => Boolean,
@@ -442,7 +507,7 @@ object Constraint {
     fromAnalyzer(entropy, assertion, hint)
   }
 
-  def fromAnalyzer(entropy: Entropy, assertion: Double => Boolean, hint: Option[String]): Constraint = {
+  private[deequ] def fromAnalyzer(entropy: Entropy, assertion: Double => Boolean, hint: Option[String]): Constraint = {
     val constraint = AnalysisBasedConstraint[FrequenciesAndNumRows, Double, Double](
       entropy, assertion, hint = hint)
 
@@ -472,7 +537,7 @@ object Constraint {
     fromAnalyzer(mutualInformation, assertion, hint)
   }
 
-  def fromAnalyzer(
+  private[deequ] def fromAnalyzer(
       mutualInformation: MutualInformation,
       assertion: Double => Boolean,
       hint: Option[String])
@@ -506,7 +571,8 @@ object Constraint {
     fromAnalyzer(approxQuantile, assertion, hint)
   }
 
-  def fromAnalyzer(approxQuantile: ApproxQuantile, assertion: Double => Boolean, hint: Option[String]): Constraint = {
+  private[deequ] def fromAnalyzer(approxQuantile: ApproxQuantile, assertion: Double => Boolean, hint: Option[String]):
+      Constraint = {
     val constraint = AnalysisBasedConstraint[ApproxQuantileState, Double, Double](
       approxQuantile, assertion, hint = hint)
 
@@ -536,7 +602,8 @@ object Constraint {
     fromAnalyzer(exactQuantile, assertion, hint)
   }
 
-  def fromAnalyzer(exactQuantile: ExactQuantile, assertion: Double => Boolean, hint: Option[String]): Constraint = {
+  private[deequ] def fromAnalyzer(exactQuantile: ExactQuantile, assertion: Double => Boolean, hint: Option[String]):
+      Constraint = {
     val constraint = AnalysisBasedConstraint[ExactQuantileState, Double, Double](
       exactQuantile, assertion, hint = hint)
 
@@ -564,7 +631,8 @@ object Constraint {
     fromAnalyzer(maxLength, assertion, hint)
   }
 
-  def fromAnalyzer(maxLength: MaxLength, assertion: Double => Boolean, hint: Option[String]): Constraint = {
+  private[deequ] def fromAnalyzer(maxLength: MaxLength, assertion: Double => Boolean, hint: Option[String]):
+      Constraint = {
     val column: String = maxLength.column
     val constraint = AnalysisBasedConstraint[MaxState, Double, Double](maxLength, assertion,
       hint = hint)
@@ -600,7 +668,8 @@ object Constraint {
     fromAnalyzer(minLength, assertion, hint)
   }
 
-  def fromAnalyzer(minLength: MinLength, assertion: Double => Boolean, hint: Option[String]): Constraint = {
+  private[deequ] def fromAnalyzer(minLength: MinLength, assertion: Double => Boolean, hint: Option[String]):
+      Constraint = {
     val column: String = minLength.column
     val constraint = AnalysisBasedConstraint[MinState, Double, Double](minLength, assertion,
       hint = hint)
@@ -673,7 +742,7 @@ object Constraint {
     fromAnalyzer(minimum, assertion, hint)
   }
 
-  def fromAnalyzer(minimum: Minimum, assertion: Double => Boolean, hint: Option[String]): Constraint = {
+  private[deequ] def fromAnalyzer(minimum: Minimum, assertion: Double => Boolean, hint: Option[String]): Constraint = {
     val column: String = minimum.column
     val constraint = AnalysisBasedConstraint[MinState, Double, Double](minimum, assertion,
       hint = hint)
@@ -709,7 +778,7 @@ object Constraint {
     fromAnalyzer(maximum, assertion, hint)
   }
 
-  def fromAnalyzer(maximum: Maximum, assertion: Double => Boolean, hint: Option[String]): Constraint = {
+  private[deequ] def fromAnalyzer(maximum: Maximum, assertion: Double => Boolean, hint: Option[String]): Constraint = {
     val column: String = maximum.column
     val constraint = AnalysisBasedConstraint[MaxState, Double, Double](maximum, assertion,
       hint = hint)
@@ -722,6 +791,68 @@ object Constraint {
       s"MaximumConstraint($maximum)",
       s"ColumnMax-$column",
       sparkAssertion)
+  }
+
+  /**
+    * Runs range analysis on the given column and executes the assertion
+    *
+    * @param column Column to run the assertion on
+    * @param assertion Function that receives a double input parameter and returns a boolean
+    * @param hint    A hint to provide additional context why a constraint could have failed
+    */
+  def rangeConstraint(
+      column: String,
+      assertion: Double => Boolean,
+      where: Option[String] = None,
+      hint: Option[String] = None)
+    : Constraint = {
+
+    val range = Range(column, where)
+
+    fromAnalyzer(range, assertion, hint)
+  }
+
+  private[deequ] def fromAnalyzer(
+      range: Range,
+      assertion: Double => Boolean,
+      hint: Option[String])
+    : Constraint = {
+    val constraint = AnalysisBasedConstraint[RangeState, Double, Double](
+      range, assertion, hint = hint)
+
+    new NamedConstraint(constraint, s"RangeConstraint($range)")
+  }
+
+  /**
+    * Runs interquartile range analysis on the given column and executes the assertion
+    *
+    * @param column Column to run the assertion on
+    * @param assertion Function that receives a double input parameter and returns a boolean
+    * @param hint    A hint to provide additional context why a constraint could have failed
+    */
+  def interquartileRangeConstraint(
+      column: String,
+      assertion: Double => Boolean,
+      where: Option[String] = None,
+      hint: Option[String] = None)
+    : Constraint = {
+
+    val iqr = InterquartileRange(column, where)
+
+    fromAnalyzer(iqr, assertion, hint)
+  }
+
+  private[deequ] def fromAnalyzer(
+      iqr: InterquartileRange,
+      assertion: Double => Boolean,
+      hint: Option[String])
+    : Constraint = {
+    val constraint =
+      AnalysisBasedConstraint[InterquartileRangeState, Double, Double](
+        iqr, assertion, hint = hint)
+
+    new NamedConstraint(constraint,
+      s"InterquartileRangeConstraint($iqr)")
   }
 
   /**
@@ -743,7 +874,7 @@ object Constraint {
     fromAnalyzer(mean, assertion, hint)
   }
 
-  def fromAnalyzer(mean: Mean, assertion: Double => Boolean, hint: Option[String]): Constraint = {
+  private[deequ] def fromAnalyzer(mean: Mean, assertion: Double => Boolean, hint: Option[String]): Constraint = {
     val constraint = AnalysisBasedConstraint[MeanState, Double, Double](mean, assertion,
       hint = hint)
 
@@ -769,11 +900,30 @@ object Constraint {
     fromAnalyzer(sum, assertion, hint)
   }
 
-  def fromAnalyzer(sum: Sum, assertion: Double => Boolean, hint: Option[String]): Constraint = {
+  private[deequ] def fromAnalyzer(sum: Sum, assertion: Double => Boolean, hint: Option[String]): Constraint = {
     val constraint = AnalysisBasedConstraint[SumState, Double, Double](sum, assertion,
       hint = hint)
 
     new NamedConstraint(constraint, s"SumConstraint($sum)")
+  }
+
+  /**
+   * Creates a constraint that checks if a column exists in the DataFrame
+   *
+   * @param column Column to check for existence
+   * @param hint A hint to provide additional context why a constraint could have failed
+   */
+  def columnExistsConstraint(
+      column: String,
+      hint: Option[String] = None)
+  : Constraint = {
+
+    val columnExists = ColumnExists(column)
+
+    val constraint = AnalysisBasedConstraint[ColumnExistsState, Double, Double](
+      columnExists, Check.IsOne, hint = hint)
+
+    new NamedConstraint(constraint, s"ColumnExistsConstraint($column)")
   }
 
   /**
@@ -795,7 +945,7 @@ object Constraint {
     fromAnalyzer(standardDeviation, assertion, hint)
   }
 
-  def fromAnalyzer(
+  private[deequ] def fromAnalyzer(
       standardDeviation: StandardDeviation,
       assertion: Double => Boolean,
       hint: Option[String])
@@ -804,6 +954,96 @@ object Constraint {
       standardDeviation, assertion, hint = hint)
 
     new NamedConstraint(constraint, s"StandardDeviationConstraint($standardDeviation)")
+  }
+
+  /**
+    * Runs variance analysis on the given column and executes the assertion
+    *
+    * @param column Column to run the assertion on
+    * @param assertion Function that receives a double input parameter and returns a boolean
+    * @param hint    A hint to provide additional context why a constraint could have failed
+    */
+  def varianceConstraint(
+      column: String,
+      assertion: Double => Boolean,
+      where: Option[String] = None,
+      hint: Option[String] = None)
+    : Constraint = {
+
+    val variance = Variance(column, where)
+
+    fromAnalyzer(variance, assertion, hint)
+  }
+
+  private[deequ] def fromAnalyzer(
+      variance: Variance,
+      assertion: Double => Boolean,
+      hint: Option[String])
+    : Constraint = {
+    val constraint = AnalysisBasedConstraint[VarianceState, Double, Double](
+      variance, assertion, hint = hint)
+
+    new NamedConstraint(constraint, s"VarianceConstraint($variance)")
+  }
+
+  /**
+    * Runs skewness analysis on the given column and executes the assertion
+    *
+    * @param column Column to run the assertion on
+    * @param assertion Function that receives a double input parameter and returns a boolean
+    * @param hint    A hint to provide additional context why a constraint could have failed
+    */
+  def skewnessConstraint(
+      column: String,
+      assertion: Double => Boolean,
+      where: Option[String] = None,
+      hint: Option[String] = None)
+    : Constraint = {
+
+    val skewness = Skewness(column, where)
+
+    fromAnalyzer(skewness, assertion, hint)
+  }
+
+  private[deequ] def fromAnalyzer(
+      skewness: Skewness,
+      assertion: Double => Boolean,
+      hint: Option[String])
+    : Constraint = {
+    val constraint = AnalysisBasedConstraint[SkewnessState, Double, Double](
+      skewness, assertion, hint = hint)
+
+    new NamedConstraint(constraint, s"SkewnessConstraint($skewness)")
+  }
+
+  /**
+    * Runs kurtosis analysis on the given column and executes the assertion
+    *
+    * @param column Column to run the assertion on
+    * @param assertion Function that receives a double input parameter and returns a boolean
+    * @param hint    A hint to provide additional context why a constraint could have failed
+    */
+  def kurtosisConstraint(
+      column: String,
+      assertion: Double => Boolean,
+      where: Option[String] = None,
+      hint: Option[String] = None)
+    : Constraint = {
+
+    val kurtosis = Kurtosis(column, where)
+
+    fromAnalyzer(kurtosis, assertion, hint)
+  }
+
+  private[deequ] def fromAnalyzer(
+      kurtosis: Kurtosis,
+      assertion: Double => Boolean,
+      hint: Option[String])
+    : Constraint = {
+    val constraint = AnalysisBasedConstraint[KurtosisState, Double, Double](
+      kurtosis, assertion, hint = hint)
+
+    new NamedConstraint(constraint, s"KurtosisConstraint($kurtosis)")
   }
 
   /**
@@ -825,7 +1065,7 @@ object Constraint {
     fromAnalyzer(approxCountDistinct, assertion, hint)
   }
 
-  def fromAnalyzer(
+  private[deequ] def fromAnalyzer(
       approxCountDistinct: ApproxCountDistinct,
       assertion: Double => Boolean,
       hint: Option[String])
@@ -857,7 +1097,8 @@ object Constraint {
     fromAnalyzer(correlation, assertion, hint)
   }
 
-  def fromAnalyzer(correlation: Correlation, assertion: Double => Boolean, hint: Option[String]): Constraint = {
+  private[deequ] def fromAnalyzer(correlation: Correlation, assertion: Double => Boolean, hint: Option[String]):
+      Constraint = {
     val constraint = AnalysisBasedConstraint[CorrelationState, Double, Double](
       correlation, assertion, hint = hint)
 
@@ -920,7 +1161,8 @@ object Constraint {
     fromAnalyzer(kllSketch, assertion, hint)
   }
 
-  def fromAnalyzer(kllSketch: KLLSketch, assertion: BucketDistribution => Boolean, hint: Option[String]): Constraint = {
+  private[deequ] def fromAnalyzer(kllSketch: KLLSketch, assertion: BucketDistribution => Boolean, hint: Option[String]):
+      Constraint = {
     val constraint = AnalysisBasedConstraint[KLLState, BucketDistribution, BucketDistribution](
       kllSketch, assertion, hint = hint)
 

@@ -18,7 +18,7 @@ package com.amazon.deequ.repository
 
 import java.time.{LocalDate, ZoneOffset}
 
-import com.amazon.deequ.analyzers.{Compliance, DataType, Entropy, Histogram, Maximum, Mean, Minimum, MutualInformation, StandardDeviation, Uniqueness, _}
+import com.amazon.deequ.analyzers.{Compliance, DataType, Entropy, Histogram, HistogramBinned, Maximum, Mean, Minimum, MutualInformation, StandardDeviation, Uniqueness, _}
 import com.amazon.deequ.analyzers.runners.{AnalysisRunner, AnalyzerContext}
 import com.amazon.deequ.metrics._
 import com.amazon.deequ.utils.FixtureSupport
@@ -35,9 +35,17 @@ class AnalysisResultSerdeTest extends FlatSpec with Matchers {
 
     val analyzerContextWithAllSuccValues = new AnalyzerContext(Map(
       Size() -> DoubleMetric(Entity.Column, "Size", "*", Success(5.0)),
-      Completeness("ColumnA") ->
+      ZerosCount("ColumnA") ->
+        DoubleMetric(Entity.Column, "ZerosCount", "ColumnA", Success(0.0)),
+      Completeness("ColumnA", analyzerOptions = Some(AnalyzerOptions(
+        nullBehavior = NullBehavior.Ignore
+      ))) ->
         DoubleMetric(Entity.Column, "Completeness", "ColumnA", Success(5.0)),
-      Compliance("rule1", "att1 > 3", columns = List("att1")) ->
+      Compliance("rule1", "att1 > 3", columns = List("att1"),
+        analyzerOptions = Some(AnalyzerOptions(
+          nullBehavior = NullBehavior.Ignore
+        ))
+      ) ->
         DoubleMetric(Entity.Column, "Completeness", "ColumnA", Success(5.0)),
       ApproxCountDistinct("columnA", Some("test")) ->
         DoubleMetric(Entity.Column, "Completeness", "ColumnA", Success(5.0)),
@@ -64,6 +72,13 @@ class AnalysisResultSerdeTest extends FlatSpec with Matchers {
       Histogram("ColumnA", None, 5) ->
         HistogramMetric("ColumnA", Success(Distribution(
           Map("some" -> DistributionValue(10, 0.5)), 10))),
+      HistogramBinned("ColumnA", Some(5)) ->
+        HistogramBinnedMetric("ColumnA", Success(DistributionBinned(
+          Vector(BinData(0.0, 10.0, 5, 0.5), BinData(10.0, 20.0, 5, 0.5)), 2))),
+      HistogramBinned("ColumnA", Some(3)) ->
+        HistogramBinnedMetric("ColumnA", Success(DistributionBinned(
+          Vector(BinData(Double.NegativeInfinity, Double.NegativeInfinity, 2, 0.2),
+                 BinData(0.0, 15.0, 4, 0.4), BinData(15.0, 30.0, 4, 0.4)), 3))),
       Entropy("ColumnA") ->
         DoubleMetric(Entity.Column, "Completeness", "ColumnA", Success(5.0)),
       MutualInformation(Seq("ColumnA", "ColumnB")) ->
@@ -72,6 +87,11 @@ class AnalysisResultSerdeTest extends FlatSpec with Matchers {
         DoubleMetric(Entity.Column, "Completeness", "ColumnA", Success(5.0)),
       Maximum("ColumnA") ->
         DoubleMetric(Entity.Column, "Completeness", "ColumnA", Success(5.0)),
+      Range("ColumnA") ->
+        DoubleMetric(Entity.Column, "Range", "ColumnA", Success(5.0)),
+      InterquartileRange("ColumnA") ->
+        DoubleMetric(Entity.Column, "InterquartileRange",
+          "ColumnA", Success(2.5)),
       Mean("ColumnA") ->
         DoubleMetric(Entity.Column, "Completeness", "ColumnA", Success(5.0)),
       Sum("ColumnA") ->
@@ -80,6 +100,12 @@ class AnalysisResultSerdeTest extends FlatSpec with Matchers {
         DoubleMetric(Entity.Column, "RatioOfSums", "ColumnA", Success(5.0)),
       StandardDeviation("ColumnA") ->
         DoubleMetric(Entity.Column, "Completeness", "ColumnA", Success(5.0)),
+      Variance("ColumnA") ->
+        DoubleMetric(Entity.Column, "Variance", "ColumnA", Success(5.0)),
+      Skewness("ColumnA") ->
+        DoubleMetric(Entity.Column, "Skewness", "ColumnA", Success(0.0)),
+      Kurtosis("ColumnA") ->
+        DoubleMetric(Entity.Column, "Kurtosis", "ColumnA", Success(0.0)),
       DataType("ColumnA") ->
         DoubleMetric(Entity.Column, "Completeness", "ColumnA", Success(5.0)),
       MinLength("ColumnA") ->
@@ -87,7 +113,10 @@ class AnalysisResultSerdeTest extends FlatSpec with Matchers {
       MaxLength("ColumnA") ->
         DoubleMetric(Entity.Column, "MaxLength", "ColumnA", Success(5.0)),
       ExactQuantile("ColumnA", 0.5) ->
-        DoubleMetric(Entity.Column, "Completeness", "ColumnA", Success(5.0))
+        DoubleMetric(Entity.Column, "Completeness", "ColumnA", Success(5.0)),
+      KLLSketch("ColumnA") ->
+        KLLMetric("ColumnA", Success(BucketDistribution(
+          List(BucketValue(0.0, 5.0, 2L)), List(200.0, 0.5), Array(Array(1.0, 2.0)))))
     ))
 
     val dateTime = LocalDate.of(2017, 10, 14).atTime(10, 10, 10)
@@ -187,6 +216,39 @@ class AnalysisResultSerdeTest extends FlatSpec with Matchers {
     assertCorrectlyConvertsAnalysisResults(Seq(result))
   }
 
+  "serialization of KLLSketch" should "correctly restore it" in {
+
+    val bucketValue1 = BucketValue(0.0, 10.0, 5L)
+    val bucketValue2 = BucketValue(10.0, 20.0, 3L)
+    val buckets = List(bucketValue1, bucketValue2)
+    val parameters = List(200.0, 2.0/3.0)
+    val data = Array(Array(1.0, 2.0), Array(3.0, 4.0))
+    val bucketDistribution = BucketDistribution(buckets, parameters, data)
+
+    val analyzer = KLLSketch("col", Some(KLLParameters(200, 2.0/3.0, 10)))
+    val metric = KLLMetric("col", Success(bucketDistribution))
+    val context = AnalyzerContext(Map(analyzer -> metric))
+    val result = new AnalysisResult(ResultKey(0), context)
+
+    assertCorrectlyConvertsAnalysisResults(Seq(result))
+  }
+
+  "serialization of KLLSketch without parameters" should "correctly restore it" in {
+
+    val bucketValue = BucketValue(0.0, 100.0, 10L)
+    val buckets = List(bucketValue)
+    val parameters = List(1000.0, 0.5)
+    val data = Array(Array(5.0, 15.0))
+    val bucketDistribution = BucketDistribution(buckets, parameters, data)
+
+    val analyzer = KLLSketch("col")
+    val metric = KLLMetric("col", Success(bucketDistribution))
+    val context = AnalyzerContext(Map(analyzer -> metric))
+    val result = new AnalysisResult(ResultKey(0), context)
+
+    assertCorrectlyConvertsAnalysisResults(Seq(result))
+  }
+
   val histogramSumJson =
     """[
       |  {
@@ -258,6 +320,98 @@ class AnalysisResultSerdeTest extends FlatSpec with Matchers {
         |  }
         |]""".stripMargin
 
+  val histogramBinnedJson =
+      """[
+        |  {
+        |    "resultKey": {
+        |      "dataSetDate": 0,
+        |      "tags": {}
+        |    },
+        |    "analyzerContext": {
+        |      "metricMap": [
+        |        {
+        |          "analyzer": {
+        |            "analyzerName": "HistogramBinned",
+        |            "column": "columnA",
+        |            "binCount": 5
+        |          },
+        |          "metric": {
+        |            "metricName": "HistogramBinnedMetric",
+        |            "column": "columnA",
+        |            "numberOfBins": 2,
+        |            "value": {
+        |              "numberOfBins": 2,
+        |              "bins": [
+        |                {
+        |                  "binStart": 0.0,
+        |                  "binEnd": 10.0,
+        |                  "frequency": 5,
+        |                  "ratio": 0.5
+        |                },
+        |                {
+        |                  "binStart": 10.0,
+        |                  "binEnd": 20.0,
+        |                  "frequency": 5,
+        |                  "ratio": 0.5
+        |                }
+        |              ]
+        |            }
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  }
+        |]""".stripMargin
+
+  val histogramBinnedWithNullsJson =
+      """[
+        |  {
+        |    "resultKey": {
+        |      "dataSetDate": 0,
+        |      "tags": {}
+        |    },
+        |    "analyzerContext": {
+        |      "metricMap": [
+        |        {
+        |          "analyzer": {
+        |            "analyzerName": "HistogramBinned",
+        |            "column": "columnA",
+        |            "binCount": 3
+        |          },
+        |          "metric": {
+        |            "metricName": "HistogramBinnedMetric",
+        |            "column": "columnA",
+        |            "numberOfBins": 3,
+        |            "value": {
+        |              "numberOfBins": 3,
+        |              "bins": [
+        |                {
+        |                  "binStart": -Infinity,
+        |                  "binEnd": -Infinity,
+        |                  "frequency": 2,
+        |                  "ratio": 0.2
+        |                },
+        |                {
+        |                  "binStart": 0.0,
+        |                  "binEnd": 15.0,
+        |                  "frequency": 4,
+        |                  "ratio": 0.4
+        |                },
+        |                {
+        |                  "binStart": 15.0,
+        |                  "binEnd": 30.0,
+        |                  "frequency": 4,
+        |                  "ratio": 0.4
+        |                }
+        |              ]
+        |            }
+        |          }
+        |        }
+        |      ]
+        |    }
+        |  }
+        |]""".stripMargin
+
   "Histogram serialization" should "be backward compatible for count" in {
       val expected = histogramCountJson
       val analyzer = Histogram("columnA")
@@ -292,6 +446,51 @@ class AnalysisResultSerdeTest extends FlatSpec with Matchers {
     assert(deserialize(histogramSumJson) == List(expected))
   }
 
+  "HistogramBinned serialization" should "properly serialize binned distribution" in {
+    val expected = histogramBinnedJson
+    val analyzer = HistogramBinned("columnA", Some(5))
+    val metric = HistogramBinnedMetric("columnA", Success(DistributionBinned(
+      Vector(BinData(0.0, 10.0, 5, 0.5), BinData(10.0, 20.0, 5, 0.5)), 2)))
+    val context = AnalyzerContext(Map(analyzer -> metric))
+    val result = new AnalysisResult(ResultKey(0), context)
+    assert(serialize(Seq(result)) == expected)
+  }
+
+  "HistogramBinned deserialization" should "properly deserialize binned distribution" in {
+    val analyzer = HistogramBinned("columnA", Some(5))
+    val metric = HistogramBinnedMetric("columnA", Success(DistributionBinned(
+      Vector(BinData(0.0, 10.0, 5, 0.5), BinData(10.0, 20.0, 5, 0.5)), 2)))
+    val context = AnalyzerContext(Map(analyzer -> metric))
+    val expected = new AnalysisResult(ResultKey(0), context)
+    assert(deserialize(histogramBinnedJson) == List(expected))
+  }
+
+  "HistogramBinned serialization" should "properly serialize null values as -Infinity" in {
+    val expected = histogramBinnedWithNullsJson
+    val analyzer = HistogramBinned("columnA", Some(3))
+    val metric = HistogramBinnedMetric("columnA", Success(DistributionBinned(
+      Vector(
+        BinData(Double.NegativeInfinity, Double.NegativeInfinity, 2, 0.2),
+        BinData(0.0, 15.0, 4, 0.4),
+        BinData(15.0, 30.0, 4, 0.4)
+      ), 3)))
+    val context = AnalyzerContext(Map(analyzer -> metric))
+    val result = new AnalysisResult(ResultKey(0), context)
+    assert(serialize(Seq(result)) == expected)
+  }
+
+  "HistogramBinned deserialization" should "properly deserialize -Infinity back to null values" in {
+    val analyzer = HistogramBinned("columnA", Some(3))
+    val metric = HistogramBinnedMetric("columnA", Success(DistributionBinned(
+      Vector(
+        BinData(Double.NegativeInfinity, Double.NegativeInfinity, 2, 0.2),
+        BinData(0.0, 15.0, 4, 0.4),
+        BinData(15.0, 30.0, 4, 0.4)
+      ), 3)))
+    val context = AnalyzerContext(Map(analyzer -> metric))
+    val expected = new AnalysisResult(ResultKey(0), context)
+    assert(deserialize(histogramBinnedWithNullsJson) == List(expected))
+  }
 
   def assertCorrectlyConvertsAnalysisResults(
       analysisResults: Seq[AnalysisResult],

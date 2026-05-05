@@ -42,6 +42,15 @@ class ConstraintsTest extends WordSpec with Matchers with SparkContextSpec with 
     }
   }
 
+  "ZerosCount constraint" should {
+    "assert on zeros count" in withSparkSession { sparkSession =>
+      val df = getDfWithNumericValues(sparkSession)
+      // att2 has values [0, 0, 0, 5, 6, 7] -> 3 zeros
+      calculate(Constraint.zerosCountConstraint("att2", _ == 3), df)
+        .status shouldBe ConstraintStatus.Success
+    }
+  }
+
   "Histogram constraints" should {
     "assert on bin number" in withSparkSession { sparkSession =>
       val df = getDfMissing(sparkSession)
@@ -62,6 +71,29 @@ class ConstraintsTest extends WordSpec with Matchers with SparkContextSpec with 
           assert(result.message.isDefined)
           assert(result.message.get.startsWith(AnalysisBasedConstraint.AssertionException))
       }
+    }
+  }
+
+  "Histogram binned constraint" should {
+    "succeed for valid binned distribution assertions" in withSparkSession { sparkSession =>
+      val df = sparkSession.createDataFrame(Seq(
+        (1, 10.0), (2, 20.0), (3, 30.0), (4, 40.0), (5, 50.0)
+      )).toDF("id", "value")
+
+      calculate(Constraint.histogramBinnedConstraint("value",
+        _.numberOfBins == 10), df).status shouldBe ConstraintStatus.Success
+
+      calculate(Constraint.histogramBinnedBinConstraint("value",
+        _ == 10), df).status shouldBe ConstraintStatus.Success
+    }
+
+    "fail when total frequency exceeds data count" in withSparkSession { sparkSession =>
+      val df = sparkSession.createDataFrame(Seq(
+        (1, 10.0), (2, 20.0)
+      )).toDF("id", "value")
+
+      calculate(Constraint.histogramBinnedConstraint("value",
+        _.bins.map(_.frequency).sum > 5), df).status shouldBe ConstraintStatus.Failure
     }
   }
 
@@ -90,6 +122,17 @@ class ConstraintsTest extends WordSpec with Matchers with SparkContextSpec with 
       calculate(Constraint.maxConstraint("att1", _ == 6.0), df)
         .status shouldBe ConstraintStatus.Success
     }
+    "assert on range" in withSparkSession { sparkSession =>
+      val df = getDfWithNumericValues(sparkSession)
+      calculate(Constraint.rangeConstraint("att1", _ == 5.0), df)
+        .status shouldBe ConstraintStatus.Success
+    }
+    "assert on interquartile range" in withSparkSession { sparkSession =>
+      val df = getDfWithNumericValues(sparkSession)
+      calculate(Constraint.interquartileRangeConstraint(
+        "att1", _ == 2.5), df)
+        .status shouldBe ConstraintStatus.Success
+    }
     "assert on mean" in withSparkSession { sparkSession =>
       val df = getDfWithNumericValues(sparkSession)
       calculate(Constraint.meanConstraint("att1", _ == 3.5), df)
@@ -103,6 +146,21 @@ class ConstraintsTest extends WordSpec with Matchers with SparkContextSpec with 
     "assert on standard deviation" in withSparkSession { sparkSession =>
       val df = getDfWithNumericValues(sparkSession)
       calculate(Constraint.standardDeviationConstraint("att1", _ == 1.707825127659933), df)
+        .status shouldBe ConstraintStatus.Success
+    }
+    "assert on variance" in withSparkSession { sparkSession =>
+      val df = getDfWithNumericValues(sparkSession)
+      calculate(Constraint.varianceConstraint("att1", _ == 2.9166666666666665), df)
+        .status shouldBe ConstraintStatus.Success
+    }
+    "assert on skewness" in withSparkSession { sparkSession =>
+      val df = getDfWithNumericValues(sparkSession)
+      calculate(Constraint.skewnessConstraint("att1", _ == 0.0), df)
+        .status shouldBe ConstraintStatus.Success
+    }
+    "assert on kurtosis" in withSparkSession { sparkSession =>
+      val df = getDfWithNumericValues(sparkSession)
+      calculate(Constraint.kurtosisConstraint("att1", _ < 0.0), df)
         .status shouldBe ConstraintStatus.Success
     }
     "assert on approximate count distinct" in withSparkSession { sparkSession =>

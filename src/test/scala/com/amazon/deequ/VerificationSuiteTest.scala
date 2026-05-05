@@ -23,6 +23,7 @@ import com.amazon.deequ.checks.Check
 import com.amazon.deequ.checks.CheckLevel
 import com.amazon.deequ.checks.CheckStatus
 import com.amazon.deequ.constraints.Constraint
+import com.amazon.deequ.constraints.ConstraintStatus
 import com.amazon.deequ.io.DfsUtils
 import com.amazon.deequ.metrics.DoubleMetric
 import com.amazon.deequ.metrics.Entity
@@ -324,44 +325,55 @@ class VerificationSuiteTest extends WordSpec with Matchers with SparkContextSpec
       val isComplete = new Check(CheckLevel.Error, "rule1").isComplete("att1")
       val completeness = new Check(CheckLevel.Error, "rule2").hasCompleteness("att2", _ > 0.7)
       val isPrimaryKey = new Check(CheckLevel.Error, "rule3").isPrimaryKey("item")
-      val minLength = new Check(CheckLevel.Error, "rule3")
+      val minLength = new Check(CheckLevel.Error, "rule4")
         .hasMinLength("item", _ >= 1, analyzerOptions = Option(AnalyzerOptions(NullBehavior.Fail)))
-      val maxLength = new Check(CheckLevel.Error, "rule4")
+      val maxLength = new Check(CheckLevel.Error, "rule5")
         .hasMaxLength("item", _ <= 1, analyzerOptions = Option(AnalyzerOptions(NullBehavior.Fail)))
       val patternMatch = new Check(CheckLevel.Error, "rule6").hasPattern("att2", "[a-z]".r)
       val min = new Check(CheckLevel.Error, "rule7").hasMin("val1", _ > 1)
       val max = new Check(CheckLevel.Error, "rule8").hasMax("val1", _ <= 3)
       val compliance = new Check(CheckLevel.Error, "rule9")
         .satisfies("item < 1000", "rule9", columns = List("item"))
+      val areUniqueTrue = new Check(CheckLevel.Error, "rule10")
+        .areUnique(Seq("item", "att1")) // att1 is not unique but is unique with item
+      val areUniqueFalse = new Check(CheckLevel.Error, "rule11")
+        .areUnique(Seq("att1", "att2")) // non unique for rows 1,4,6
+
       val expectedColumn1 = isComplete.description
       val expectedColumn2 = completeness.description
-      val expectedColumn3 = minLength.description
-      val expectedColumn4 = maxLength.description
-      val expectedColumn5 = patternMatch.description
-      val expectedColumn6 = min.description
-      val expectedColumn7 = max.description
-      val expectedColumn8 = compliance.description
+      val expectedColumn3 = isPrimaryKey.description
+      val expectedColumn4 = minLength.description
+      val expectedColumn5 = maxLength.description
+      val expectedColumn6 = patternMatch.description
+      val expectedColumn7 = min.description
+      val expectedColumn8 = max.description
+      val expectedColumn9 = compliance.description
+      val expectedColumn10 = areUniqueTrue.description
+      val expectedColumn11 = areUniqueFalse.description
 
       val suite = new VerificationSuite().onData(data)
         .addCheck(isComplete)
         .addCheck(completeness)
+        .addCheck(isPrimaryKey)
         .addCheck(minLength)
         .addCheck(maxLength)
         .addCheck(patternMatch)
         .addCheck(min)
         .addCheck(max)
         .addCheck(compliance)
+        .addCheck(areUniqueTrue)
+        .addCheck(areUniqueFalse)
 
       val result: VerificationResult = suite.run()
 
       assert(result.status == CheckStatus.Error)
 
-      val resultData = VerificationResult.rowLevelResultsAsDataFrame(session, result, data)
+      val resultData = VerificationResult.rowLevelResultsAsDataFrame(session, result, data).orderBy("item")
 
       resultData.show()
       val expectedColumns: Set[String] =
-        data.columns.toSet + expectedColumn1 + expectedColumn2 + expectedColumn3 + expectedColumn4 +
-          expectedColumn5 + expectedColumn6 + expectedColumn7 + expectedColumn8
+        data.columns.toSet + expectedColumn1 + expectedColumn2 + expectedColumn3 + expectedColumn4 + expectedColumn5 +
+          expectedColumn6 + expectedColumn7 + expectedColumn8 + expectedColumn9 + expectedColumn10 + expectedColumn11
       assert(resultData.columns.toSet == expectedColumns)
 
 
@@ -375,19 +387,30 @@ class VerificationSuiteTest extends WordSpec with Matchers with SparkContextSpec
       assert(Seq(true, true, true, true, true, true).sameElements(rowLevel3))
 
       val rowLevel4 = resultData.select(expectedColumn4).collect().map(r => r.getBoolean(0))
-      assert(Seq(true, false, false, false, false, false).sameElements(rowLevel4))
+      assert(Seq(true, true, true, true, true, true).sameElements(rowLevel4))
 
-      val rowLevel5 = resultData.select(expectedColumn5).collect().map(r => r.getAs[Boolean](0))
-      assert(Seq(true, true, false, true, false, true).sameElements(rowLevel5))
+      val rowLevel5 = resultData.select(expectedColumn5).collect().map(r => r.getBoolean(0))
+      assert(Seq(true, false, false, false, false, false).sameElements(rowLevel5))
 
       val rowLevel6 = resultData.select(expectedColumn6).collect().map(r => r.getAs[Boolean](0))
-      assert(Seq(false, true, true, true, true, true).sameElements(rowLevel6))
+      assert(Seq(true, true, false, true, false, true).sameElements(rowLevel6))
 
       val rowLevel7 = resultData.select(expectedColumn7).collect().map(r => r.getAs[Boolean](0))
-      assert(Seq(true, true, true, false, false, false).sameElements(rowLevel7))
+      assert(Seq(false, true, true, true, true, true).sameElements(rowLevel7))
 
       val rowLevel8 = resultData.select(expectedColumn8).collect().map(r => r.getAs[Boolean](0))
       assert(Seq(true, true, true, false, false, false).sameElements(rowLevel8))
+
+      val rowLevel9 = resultData.select(expectedColumn9).collect().map(r => r.getAs[Boolean](0))
+      assert(Seq(true, true, true, false, false, false).sameElements(rowLevel9))
+
+      // Multiple Uniqueness for item and att1 - att1 is not unique but is unique with item
+      val rowLevel10 = resultData.select(expectedColumn10).collect().map(r => r.getAs[Boolean](0))
+      assert(Seq(true, true, true, true, true, true).sameElements(rowLevel10))
+
+      // Multiple Uniqueness for att1 and att2 - non unique for rows 1,4,6
+      val rowLevel11 = resultData.select(expectedColumn11).collect().map(r => r.getAs[Boolean](0))
+      assert(Seq(false, true, true, false, true, false).sameElements(rowLevel11))
     }
 
     "generate a result that contains row-level results with true for filtered rows" in withSparkSession { session =>
@@ -1693,6 +1716,45 @@ class VerificationSuiteTest extends WordSpec with Matchers with SparkContextSpec
         assert(additionalColsResult.status == CheckStatus.Success) // or expected status
 
     }
+
+    "isContainedIn constraint should handle values with single quotes" in withSparkSession { session =>
+      import session.implicits._
+
+      val df = Seq(
+        ("Versicolor"),
+        ("Virginica's"),
+        ("Setosa"),
+        ("Versicolor"),
+        ("Virginica's")
+      ).toDF("variety")
+
+      val check = Check(CheckLevel.Error, "single quote check")
+        .isContainedIn("variety", Array("Versicolor", "Virginica's", "Setosa"))
+
+      val verificationResult = VerificationSuite()
+        .onData(df)
+        .addCheck(check)
+        .run()
+
+      assert(verificationResult.status == CheckStatus.Success)
+
+      val checkResult = verificationResult.checkResults(check)
+
+      assert(checkResult.status == CheckStatus.Success)
+
+      assert(checkResult.constraintResults.size == 1)
+
+      val constraintResult = checkResult.constraintResults.head
+
+      assert(constraintResult.status == ConstraintStatus.Success)
+
+      val metric = constraintResult.metric.getOrElse(fail("Expected metric to be present"))
+      assert(metric.isInstanceOf[DoubleMetric])
+      assert(metric.asInstanceOf[DoubleMetric].value.isSuccess)
+
+      val metricValue = metric.asInstanceOf[DoubleMetric].value.get
+      assert(metricValue == 1.0)
+    }
   }
 
   "Verification Suite with == based Min/Max checks and filtered row behavior" should {
@@ -2083,6 +2145,62 @@ class VerificationSuiteTest extends WordSpec with Matchers with SparkContextSpec
   }
 
   "Verification Suite's Row Level Results" should {
+    "yield correct results for invalid column type" in withSparkSession { sparkSession =>
+      import sparkSession.implicits._
+      val df = Seq(
+        ("1", 1, "blue"),
+        ("2", 2, "green"),
+        ("3", 3, "blue"),
+        ("4", 4, "red"),
+        ("5", 5, "purple")
+      ).toDF("id", "id2", "color")
+
+      val idColumn = "id"
+      val id2Column = "id2"
+
+      val minCheckOnInvalidColumnDescription = s"min check on $idColumn"
+      val minCheckOnValidColumnDescription = s"min check on $id2Column"
+      val patternMatchCheckOnInvalidColumnDescription = s"pattern check on $id2Column"
+      val patternMatchCheckOnValidColumnDescription = s"pattern check on $idColumn"
+
+      val minCheckOnInvalidColumn = Check(CheckLevel.Error, minCheckOnInvalidColumnDescription)
+        .hasMin(idColumn, _ >= 3)
+        .isComplete(idColumn)
+      val minCheckOnValidColumn = Check(CheckLevel.Error, minCheckOnValidColumnDescription)
+        .hasMin(id2Column, _ >= 3)
+        .isComplete(id2Column)
+
+      val patternMatchCheckOnInvalidColumn = Check(CheckLevel.Error, patternMatchCheckOnInvalidColumnDescription)
+        .hasPattern(id2Column, "[0-3]+".r)
+      val patternMatchCheckOnValidColumn = Check(CheckLevel.Error, patternMatchCheckOnValidColumnDescription)
+        .hasPattern(idColumn, "[0-3]+".r)
+
+      val checks = Seq(
+        minCheckOnInvalidColumn,
+        minCheckOnValidColumn,
+        patternMatchCheckOnInvalidColumn,
+        patternMatchCheckOnValidColumn
+      )
+
+      val verificationResult = VerificationSuite().onData(df).addChecks(checks).run()
+      val rowLevelResultsDF = VerificationResult.rowLevelResultsAsDataFrame(sparkSession, verificationResult, df)
+      val rowLevelResults = rowLevelResultsDF.collect()
+
+      val minCheckOnInvalidColumnRowLevelResults =
+        rowLevelResults.map(_.getAs[Boolean](minCheckOnInvalidColumnDescription))
+      val minCheckOnValidColumnRowLevelResults =
+        rowLevelResults.map(_.getAs[Boolean](minCheckOnValidColumnDescription))
+      val patternMatchCheckOnInvalidColumnRowLevelResults =
+        rowLevelResults.map(_.getAs[Boolean](patternMatchCheckOnInvalidColumnDescription))
+      val patternMatchCheckOnValidColumnRowLevelResults =
+        rowLevelResults.map(_.getAs[Boolean](patternMatchCheckOnValidColumnDescription))
+
+      minCheckOnInvalidColumnRowLevelResults shouldBe Seq(false, false, false, false, false)
+      minCheckOnValidColumnRowLevelResults shouldBe Seq(false, false, true, true, true)
+      patternMatchCheckOnInvalidColumnRowLevelResults shouldBe Seq(false, false, false, false, false)
+      patternMatchCheckOnValidColumnRowLevelResults shouldBe Seq(true, true, true, false, false)
+    }
+
     "yield correct results for satisfies check" in withSparkSession { sparkSession =>
       import sparkSession.implicits._
       val df = Seq(
@@ -2171,6 +2289,184 @@ class VerificationSuiteTest extends WordSpec with Matchers with SparkContextSpec
     }
     test(repository)
   }
+
+    "return correct row-level results when where clause in hasMin/hasMax filters all rows" in
+      withSparkSession { sparkSession =>
+        val data = getDfWithNumericValues(sparkSession)
+
+        val check = new Check(CheckLevel.Error, "min-max-where-zero-match")
+          .hasMin("att1", _ >= 0.0).where("att1 > 100")
+          .hasMax("att1", _ <= 1000.0).where("att1 > 100")
+
+        val result = VerificationSuite().onData(data).addCheck(check).run()
+
+        assert(result.status == CheckStatus.Success)
+
+        val resultData = VerificationResult.rowLevelResultsAsDataFrame(sparkSession, result, data)
+        val newCols = resultData.columns.diff(data.columns)
+        val resultColumn = newCols.head
+        val rowValues = resultData.select(resultColumn).collect().map(_.getBoolean(0))
+        rowValues.foreach(v => assert(v))
+      }
+
+    "return Success when where clause filters all rows and assertion would otherwise fail" in
+      withSparkSession { sparkSession =>
+        val data = getDfWithNumericValues(sparkSession)
+
+        // att1 values are 1-6, assertion _ >= 10 would fail without the where clause
+        val check = new Check(CheckLevel.Error, "min-where-would-fail")
+          .hasMin("att1", _ >= 10.0).where("att1 > 100")
+
+        val result = VerificationSuite().onData(data).addCheck(check).run()
+
+        assert(result.status == CheckStatus.Success)
+      }
+
+    "return null row-level results when where clause filters all rows with FilteredRowOutcome.NULL" in
+      withSparkSession { sparkSession =>
+        val data = getDfWithNumericValues(sparkSession)
+        val opts = Some(AnalyzerOptions(filteredRow = FilteredRowOutcome.NULL))
+
+        val check = new Check(CheckLevel.Error, "min-max-where-zero-match-null")
+          .hasMin("att1", _ >= 0.0, analyzerOptions = opts).where("att1 > 100")
+          .hasMax("att1", _ <= 1000.0, analyzerOptions = opts).where("att1 > 100")
+
+        val result = VerificationSuite().onData(data).addCheck(check).run()
+
+        assert(result.status == CheckStatus.Success)
+
+        val resultData = VerificationResult.rowLevelResultsAsDataFrame(sparkSession, result, data)
+        val newCols = resultData.columns.diff(data.columns)
+        val resultColumn = newCols.head
+        val rowValues = resultData.select(resultColumn).collect().map(_.isNullAt(0))
+        rowValues.foreach(v => assert(v))
+      }
+
+    "return Error when where clause matches rows and assertion fails" in
+      withSparkSession { sparkSession =>
+        val data = getDfWithNumericValues(sparkSession)
+
+        // att1 values 4,5,6 match the filter, min is 4, assertion _ >= 10 fails
+        val check = new Check(CheckLevel.Error, "min-where-legit-fail")
+          .hasMin("att1", _ >= 10.0).where("att1 > 3")
+
+        val result = VerificationSuite().onData(data).addCheck(check).run()
+
+        assert(result.status == CheckStatus.Error)
+      }
+
+    "return Success for isComplete when where clause filters all rows" in
+      withSparkSession { sparkSession =>
+        val data = getDfWithNumericValues(sparkSession)
+
+        val check = new Check(CheckLevel.Error, "complete-where-zero-match")
+          .isComplete("att1").where("att1 > 100")
+
+        val result = VerificationSuite().onData(data).addCheck(check).run()
+
+        assert(result.status == CheckStatus.Success)
+
+        val resultData = VerificationResult.rowLevelResultsAsDataFrame(sparkSession, result, data)
+        val newCols = resultData.columns.diff(data.columns)
+        val resultColumn = newCols.head
+        val rowValues = resultData.select(resultColumn).collect().map(_.getBoolean(0))
+        rowValues.foreach(v => assert(v))
+      }
+
+    "return Error for isComplete when where clause matches rows with nulls" in
+      withSparkSession { sparkSession =>
+        val data = getDfWithNumericValues(sparkSession)
+
+        // attNull has nulls for items 1-3, where clause matches all rows
+        val check = new Check(CheckLevel.Error, "complete-where-legit-fail")
+          .isComplete("attNull").where("att1 > 0")
+
+        val result = VerificationSuite().onData(data).addCheck(check).run()
+
+        assert(result.status == CheckStatus.Error)
+      }
+
+    "return Error for hasMax when where clause matches rows and assertion fails" in
+      withSparkSession { sparkSession =>
+        val data = getDfWithNumericValues(sparkSession)
+
+        // att1 values 4,5,6 match the filter, max is 6, assertion _ <= 3 fails
+        val check = new Check(CheckLevel.Error, "max-where-legit-fail")
+          .hasMax("att1", _ <= 3.0).where("att1 > 3")
+
+        val result = VerificationSuite().onData(data).addCheck(check).run()
+
+        assert(result.status == CheckStatus.Error)
+      }
+
+    "return Success for satisfies when where clause filters all rows" in
+      withSparkSession { sparkSession =>
+        val data = getDfWithNumericValues(sparkSession)
+
+        val check = new Check(CheckLevel.Error, "satisfies-where-zero-match")
+          .satisfies("att1 > 0", "att1 positive").where("att1 > 100")
+
+        val result = VerificationSuite().onData(data).addCheck(check).run()
+
+        assert(result.status == CheckStatus.Success)
+
+        val resultData = VerificationResult.rowLevelResultsAsDataFrame(sparkSession, result, data)
+        val newCols = resultData.columns.diff(data.columns)
+        val resultColumn = newCols.head
+        val rowValues = resultData.select(resultColumn).collect().map(_.getBoolean(0))
+        rowValues.foreach(v => assert(v))
+      }
+
+    "return Error for satisfies when where clause matches rows and assertion fails" in
+      withSparkSession { sparkSession =>
+        val data = getDfWithNumericValues(sparkSession)
+
+        // att1 values 4,5,6 match the filter, but att1 > 10 fails for all of them
+        val check = new Check(CheckLevel.Error, "satisfies-where-legit-fail")
+          .satisfies("att1 > 10", "att1 big").where("att1 > 3")
+
+        val result = VerificationSuite().onData(data).addCheck(check).run()
+
+        assert(result.status == CheckStatus.Error)
+      }
+
+    "return null row-level results for isComplete when where clause filters all rows with FilteredRowOutcome.NULL" in
+      withSparkSession { sparkSession =>
+        val data = getDfWithNumericValues(sparkSession)
+        val opts = Some(AnalyzerOptions(filteredRow = FilteredRowOutcome.NULL))
+
+        val check = new Check(CheckLevel.Error, "complete-where-null")
+          .isComplete("att1", analyzerOptions = opts).where("att1 > 100")
+
+        val result = VerificationSuite().onData(data).addCheck(check).run()
+
+        assert(result.status == CheckStatus.Success)
+
+        val resultData = VerificationResult.rowLevelResultsAsDataFrame(sparkSession, result, data)
+        val newCols = resultData.columns.diff(data.columns)
+        val resultColumn = newCols.head
+        val rowValues = resultData.select(resultColumn).collect().map(_.isNullAt(0))
+        rowValues.foreach(v => assert(v))
+      }
+
+    "return null row-level results for satisfies when where clause filters all rows with FilteredRowOutcome.NULL" in
+      withSparkSession { sparkSession =>
+        val data = getDfWithNumericValues(sparkSession)
+        val opts = Some(AnalyzerOptions(filteredRow = FilteredRowOutcome.NULL))
+
+        val check = new Check(CheckLevel.Error, "satisfies-where-null")
+          .satisfies("att1 > 0", "att1 positive", analyzerOptions = opts).where("att1 > 100")
+
+        val result = VerificationSuite().onData(data).addCheck(check).run()
+
+        assert(result.status == CheckStatus.Success)
+
+        val resultData = VerificationResult.rowLevelResultsAsDataFrame(sparkSession, result, data)
+        val newCols = resultData.columns.diff(data.columns)
+        val resultColumn = newCols.head
+        val rowValues = resultData.select(resultColumn).collect().map(_.isNullAt(0))
+        rowValues.foreach(v => assert(v))
+      }
 
   private[this] def assertSameRows(dataframeA: DataFrame, dataframeB: DataFrame): Unit = {
     assert(dataframeA.collect().toSet == dataframeB.collect().toSet)

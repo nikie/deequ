@@ -19,22 +19,26 @@ package com.amazon.deequ.checks
 import com.amazon.deequ.analyzers.runners.AnalyzerContext
 import com.amazon.deequ.analyzers.Analyzer
 import com.amazon.deequ.analyzers.AnalyzerOptions
+import com.amazon.deequ.analyzers.CustomSql
+import com.amazon.deequ.analyzers.CustomSqlState
 import com.amazon.deequ.analyzers.DatasetMatchAnalyzer
 import com.amazon.deequ.analyzers.DatasetMatchState
 import com.amazon.deequ.analyzers.Histogram
+import com.amazon.deequ.analyzers.HistogramBinned
 import com.amazon.deequ.analyzers.KLLParameters
 import com.amazon.deequ.analyzers.Patterns
 import com.amazon.deequ.analyzers.State
-import com.amazon.deequ.anomalydetection.HistoryUtils
 import com.amazon.deequ.anomalydetection.AnomalyDetectionStrategy
 import com.amazon.deequ.anomalydetection.AnomalyDetector
 import com.amazon.deequ.anomalydetection.DataPoint
+import com.amazon.deequ.anomalydetection.HistoryUtils
 import com.amazon.deequ.checks.ColumnCondition.isAnyNotNull
 import com.amazon.deequ.checks.ColumnCondition.isEachNotNull
 import com.amazon.deequ.constraints.Constraint._
 import com.amazon.deequ.constraints._
 import com.amazon.deequ.metrics.BucketDistribution
 import com.amazon.deequ.metrics.Distribution
+import com.amazon.deequ.metrics.DistributionBinned
 import com.amazon.deequ.metrics.Metric
 import com.amazon.deequ.repository.MetricsRepository
 import org.apache.spark.sql.DataFrame
@@ -136,6 +140,24 @@ case class Check(
   }
 
   /**
+    * Creates a constraint that asserts on the number of zero values in a column
+    *
+    * @param column Column to run the assertion on
+    * @param assertion Function that receives a long input parameter and returns a boolean
+    * @param hint A hint to provide additional context why a constraint could have failed
+    * @return
+    */
+  def hasZerosCount(
+      column: String,
+      assertion: Long => Boolean,
+      hint: Option[String] = None)
+    : CheckWithLastConstraintFilterable = {
+
+    addFilterableConstraint { filter =>
+      zerosCountConstraint(column, assertion, filter, hint) }
+  }
+
+  /**
     * Creates a constraint that asserts on a column completion.
     *
     * @param column Column to run the assertion on
@@ -167,6 +189,15 @@ case class Check(
     : CheckWithLastConstraintFilterable = {
     addFilterableConstraint { filter => completenessConstraint(column, assertion, filter, hint, analyzerOptions) }
   }
+
+  def hasColumn(
+   column: String,
+   hint: Option[String] = None)
+  : Check = {
+    val constraint = columnExistsConstraint(column, hint)
+    addConstraint(constraint)
+  }
+
 
   /**
     * Creates a constraint that asserts on completion in combined set of columns.
@@ -241,6 +272,30 @@ case class Check(
     addFilterableConstraint { filter =>
       uniquenessConstraint(Seq(column), Check.IsOne, filter, hint, analyzerOptions) }
   }
+
+  /**
+    * Creates a constraint that asserts on Uniqueness in a combined set of columns.
+    *
+    * @param columns Columns to run the assertion on
+    * @param hint A hint to provide additional context why a constraint could have failed
+    * @param analyzerOptions Options to configure analyzer behavior (NullTreatment, FilteredRow)
+    * @return
+    */
+  def areUnique(columns: Seq[String], hint: Option[String] = None,
+               analyzerOptions: Option[AnalyzerOptions] = None): CheckWithLastConstraintFilterable = {
+    addFilterableConstraint { filter =>
+      uniquenessConstraint(columns, Check.IsOne, filter, hint, analyzerOptions) }
+  }
+
+  def customSql(expression: String, assertion: Double => Boolean,
+                hint: Option[String] = None, analyzerOptions: Option[AnalyzerOptions] = None)
+  : Check = {
+    val customSqlAnalyzer = CustomSql(expression)
+    val constraint = AnalysisBasedConstraint[CustomSqlState, Double, Double](customSqlAnalyzer, assertion,
+      hint = hint)
+    addConstraint(constraint)
+  }
+
 
   /**
     * Creates a constraint that asserts on a column(s) primary key characteristics.
@@ -527,6 +582,52 @@ case class Check(
   }
 
   /**
+   * Creates a constraint that asserts on binned histogram values.
+   *
+   * @param column     Column to run the assertion on
+   * @param assertion  Function that receives a DistributionBinned input parameter and returns a boolean.
+   *                   E.g
+   *                   .hasHistogramBinnedValues("att2", _.bins(0).frequency >= 5)
+   *                   .hasHistogramBinnedValues("att2", _.bins.exists(_.ratio > 0.1))
+   * @param binCount   Number of bins for the histogram. Defaults to HistogramBinned.DefaultBinCount
+   * @param hint A hint to provide additional context why a constraint could have failed
+   * @return
+   */
+  def hasHistogramBinnedValues(
+      column: String,
+      assertion: DistributionBinned => Boolean,
+      binCount: Option[Int] = Some(HistogramBinned.DefaultBinCount),
+      hint: Option[String] = None)
+    : CheckWithLastConstraintFilterable = {
+
+    addFilterableConstraint { filter =>
+      histogramBinnedConstraint(column, assertion, binCount, filter, hint) }
+  }
+
+  /**
+   * Creates a constraint that asserts on binned histogram bin count.
+   *
+   * @param column     Column to run the assertion on
+   * @param assertion  Function that receives a Long input parameter (bin count) and returns a boolean.
+   *                   E.g
+   *                   .hasHistogramBinnedBins("att2", _ >= 5)
+   *                   .hasHistogramBinnedBins("att2", _ == 10)
+   * @param binCount   Number of bins for the histogram. Defaults to HistogramBinned.DefaultBinCount
+   * @param hint A hint to provide additional context why a constraint could have failed
+   * @return
+   */
+  def hasHistogramBinnedBins(
+      column: String,
+      assertion: Long => Boolean,
+      binCount: Option[Int] = Some(HistogramBinned.DefaultBinCount),
+      hint: Option[String] = None)
+    : CheckWithLastConstraintFilterable = {
+
+    addFilterableConstraint { filter =>
+      histogramBinnedBinConstraint(column, assertion, binCount, filter, hint) }
+  }
+
+  /**
    * Creates a constraint that asserts on column's sketch size.
    *
    * @param column    Column to run the assertion on
@@ -741,6 +842,42 @@ case class Check(
   }
 
   /**
+    * Creates a constraint that asserts on the range (max - min) of the column
+    *
+    * @param column Column to run the assertion on
+    * @param assertion Function that receives a double input parameter and returns a boolean
+    * @param hint A hint to provide additional context why a constraint could have failed
+    * @return
+    */
+  def hasRange(
+      column: String,
+      assertion: Double => Boolean,
+      hint: Option[String] = None)
+    : CheckWithLastConstraintFilterable = {
+
+    addFilterableConstraint { filter =>
+      rangeConstraint(column, assertion, filter, hint) }
+  }
+
+  /**
+    * Creates a constraint that asserts on the interquartile range of the column
+    *
+    * @param column Column to run the assertion on
+    * @param assertion Function that receives a double input parameter and returns a boolean
+    * @param hint A hint to provide additional context why a constraint could have failed
+    * @return
+    */
+  def hasInterquartileRange(
+      column: String,
+      assertion: Double => Boolean,
+      hint: Option[String] = None)
+    : CheckWithLastConstraintFilterable = {
+
+    addFilterableConstraint { filter =>
+      interquartileRangeConstraint(column, assertion, filter, hint) }
+  }
+
+  /**
     * Creates a constraint that asserts on the mean of the column
     *
     * @param column Column to run the assertion on
@@ -790,6 +927,60 @@ case class Check(
 
     addFilterableConstraint { filter =>
       standardDeviationConstraint(column, assertion, filter, hint) }
+  }
+
+  /**
+    * Creates a constraint that asserts on the variance of the column
+    *
+    * @param column Column to run the assertion on
+    * @param assertion Function that receives a double input parameter and returns a boolean
+    * @param hint A hint to provide additional context why a constraint could have failed
+    * @return
+    */
+  def hasVariance(
+      column: String,
+      assertion: Double => Boolean,
+      hint: Option[String] = None)
+    : CheckWithLastConstraintFilterable = {
+
+    addFilterableConstraint { filter =>
+      varianceConstraint(column, assertion, filter, hint) }
+  }
+
+  /**
+    * Creates a constraint that asserts on the skewness of the column
+    *
+    * @param column Column to run the assertion on
+    * @param assertion Function that receives a double input parameter and returns a boolean
+    * @param hint A hint to provide additional context why a constraint could have failed
+    * @return
+    */
+  def hasSkewness(
+      column: String,
+      assertion: Double => Boolean,
+      hint: Option[String] = None)
+    : CheckWithLastConstraintFilterable = {
+
+    addFilterableConstraint { filter =>
+      skewnessConstraint(column, assertion, filter, hint) }
+  }
+
+  /**
+    * Creates a constraint that asserts on the kurtosis of the column
+    *
+    * @param column Column to run the assertion on
+    * @param assertion Function that receives a double input parameter and returns a boolean
+    * @param hint A hint to provide additional context why a constraint could have failed
+    * @return
+    */
+  def hasKurtosis(
+      column: String,
+      assertion: Double => Boolean,
+      hint: Option[String] = None)
+    : CheckWithLastConstraintFilterable = {
+
+    addFilterableConstraint { filter =>
+      kurtosisConstraint(column, assertion, filter, hint) }
   }
 
   /**
